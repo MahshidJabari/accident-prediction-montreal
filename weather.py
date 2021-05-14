@@ -109,7 +109,7 @@ def get_weather_station_id_df(spark, accident_df):
     )
 
     df.write.parquet(cache_file)
-    return df
+    return df.withColumnRenamed("col", "station_id")
 
 
 def get_station_weather_month(station_id, year, month):
@@ -122,6 +122,7 @@ def get_station_weather_month(station_id, year, month):
         f"&Month={month}&Day=14&"
         f"timeframe=1&submit=Download+Data"
     )
+
     df = get_pandas_dataframe(url)[["Day", "Time"] + COLUMNS_USED]
 
     # When temperature is not available, it means no weather data is
@@ -193,6 +194,10 @@ def get_weather_station_weather_df(spark, stations_id):
         ),
         ["year"],
     )
+
+    if "station_id" not in stations_id.schema.names:
+        stations_id = stations_id.withColumnRenamed("col", "station_id")
+
     months_df = years_df.crossJoin(month_per_year_df)
     stations_months_df = stations_id.crossJoin(months_df)
 
@@ -262,6 +267,7 @@ def get_weather_station_coords(station_id):
         f"searchType=stnProv&optLimit=specDate&StartYear=1840&EndYear=2019&"
         f"lstProvince=QC"
     )
+    print("fetch: " + url)
     web_page = BeautifulSoup(get(url).content, "lxml")
     coords_div = web_page.body.find("div", class_="metadata").div
     lat = coords_div.div.div.find_all("div", recursive=False)[1].text
@@ -283,6 +289,10 @@ def get_weather_station_coords_df(spark, stations_id):
         get_weather_station_coords,
         StructType([StructField("lat", FloatType()), StructField("long", FloatType())]),
     )
+
+    if "station_id" not in stations_id.schema.names:
+        stations_id = stations_id.withColumnRenamed("col", "station_id")
+
     df = stations_id.withColumn(
         "coords", get_weather_station_coords_udf("station_id")
     ).select(
@@ -322,24 +332,16 @@ def DMS_to_degree(coord):
     return d + m / 60 + s / 3600
 
 
-def skip_header(file):
-    """Utility function for get_station_weather."""
-    n_emptyLineMet = 0
-    nb_line = 0
-    nb_max_header_lines = 100
-    while n_emptyLineMet < 2:
-        if file.readline() == "\n":
-            n_emptyLineMet += 1
-        if nb_line > nb_max_header_lines:
-            raise Exception("Invalid file")
-        nb_line += 1
-
-
 def get_pandas_dataframe(url):
+
     """Get pandas dataframe from retrieved csv file using URL argument."""
     csvfile = get(url).text
+    splitted_lines = csvfile.split("\n")
+    splitted_lines[0] = splitted_lines[0].replace('"', "").replace(" (LST)", "")
+    csvfile = "\n".join(splitted_lines)
+
     df = None
+    print("url:", url)
     with StringIO(csvfile) as csvfile:
-        skip_header(csvfile)
         df = pd.read_csv(csvfile, index_col="Date/Time", parse_dates=["Date/Time"])
     return df
